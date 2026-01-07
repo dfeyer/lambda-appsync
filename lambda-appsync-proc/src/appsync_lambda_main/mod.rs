@@ -307,7 +307,19 @@ impl AppsyncLambdaMain {
     fn appsync_event_handler(&self, tokens: &mut TokenStream2) {
         let call_hook = if let Some(ref hook) = self.options.hook {
             quote_spanned! {hook.span()=>
-                if let Some(resp) = #hook(&event).await {
+                mod _check_sig {
+                    use super::Operation;
+                    use ::lambda_appsync::{AppsyncEvent, AppsyncResponse};
+                    use ::core::future::Future;
+                    #[inline(always)]
+                    pub(super) async fn call_hook<'a, Fut, H>(hook: H, event: &'a AppsyncEvent<Operation>) -> Option<AppsyncResponse>
+                    where
+                        Fut: Future<Output = Option<AppsyncResponse>>,
+                        H: Fn(&'a AppsyncEvent<Operation>) -> Fut {
+                        hook(event).await
+                    }
+                }
+                if let Some(resp) = _check_sig::call_hook(#hook, &event).await{
                     return resp;
                 }
             }
@@ -368,7 +380,7 @@ impl AppsyncLambdaMain {
         tokens.extend(quote! {
             async fn function_handler(
                 event: ::lambda_appsync::lambda_runtime::LambdaEvent<::lambda_appsync::serde_json::Value>,
-            ) -> Result<#ret_type, ::lambda_appsync::lambda_runtime::Error> {
+            ) -> ::core::result::Result<#ret_type, ::lambda_appsync::lambda_runtime::Error> {
                 ::lambda_appsync::log::debug!("{event:?}");
                 ::lambda_appsync::log::info!("{}", ::lambda_appsync::serde_json::json!(event.payload));
                 Ok(#appsync_handler(::lambda_appsync::serde_json::from_value(event.payload)?).await)
@@ -380,7 +392,7 @@ impl AppsyncLambdaMain {
 
             use ::lambda_appsync::tokio;
             #[tokio::main]
-            async fn main() -> Result<(), ::lambda_appsync::lambda_runtime::Error> {
+            async fn main() -> ::core::result::Result<(), ::lambda_appsync::lambda_runtime::Error> {
                 ::lambda_appsync::env_logger::Builder::from_env(
                     ::lambda_appsync::env_logger::Env::default()
                         .default_filter_or("info,tracing::span=warn")
