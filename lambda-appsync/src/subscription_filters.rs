@@ -1,3 +1,4 @@
+#![allow(unsafe_code)]
 //! GraphQL subscription filter implementation for AWS AppSync
 //!
 //! This module provides types and abstractions for building type-safe GraphQL
