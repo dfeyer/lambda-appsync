@@ -223,8 +223,9 @@ pub struct AppsyncIdentityOidcClaims {
     pub iss: String,
     /// The subject (usually the user identifier)
     pub sub: String,
-    /// Token audience
-    pub aud: String,
+    /// Token audience (can be a single string or an array per RFC 7519 §4.1.3).
+    #[serde(deserialize_with = "deserialize_string_or_vec")]
+    pub aud: Vec<String>,
     /// Expiration time
     pub exp: i64,
     /// Issued at time
@@ -232,6 +233,28 @@ pub struct AppsyncIdentityOidcClaims {
     /// Additional custom claims from the OIDC provider
     #[serde(flatten)]
     pub additional_claims: HashMap<String, serde_json::Value>,
+}
+
+/// Deserializes a value that can be either a single string or an array of strings.
+///
+/// Per RFC 7519 §4.1.3, the JWT `aud` claim may be a single StringOrURI value
+/// or an array of StringOrURI values. This function normalizes both forms into
+/// a `Vec<String>`.
+fn deserialize_string_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrVec {
+        Vec(Vec<String>),
+        String(String),
+    }
+
+    match StringOrVec::deserialize(deserializer)? {
+        StringOrVec::Vec(v) => Ok(v),
+        StringOrVec::String(s) => Ok(vec![s]),
+    }
 }
 
 /// Identity information for Lambda-authorized requests.
@@ -688,37 +711,74 @@ mod tests {
     }
 
     #[test]
-    fn test_appsync_identity_oidc() {
+    fn test_appsync_identity_oidc_with_single_aud() {
         let json = json!({
-            "iss": "https://auth.example.com",
+            "claims": {
+                "iss": "https://auth.example.com",
+                "sub": "user123",
+                "aud": "client123",
+                "exp": 1714521210,
+                "iat": 1714517610,
+                "name": "John Doe",
+                "email": "john@example.com",
+                "roles": ["admin"],
+                "org_id": "org123",
+                "custom_claim": "value"
+            },
             "sub": "user123",
-            "aud": "client123",
-            "exp": 1714521210,
-            "iat": 1714517610,
-            "name": "John Doe",
-            "email": "john@example.com",
-            "roles": ["admin"],
-            "org_id": "org123",
-            "custom_claim": "value"
+            "issuer": "https://auth.example.com"
         });
 
         if let AppsyncIdentity::Oidc(oidc) = serde_json::from_value(json).unwrap() {
-            assert_eq!(oidc.iss, "https://auth.example.com");
             assert_eq!(oidc.sub, "user123");
-            assert_eq!(oidc.aud, "client123");
-            assert_eq!(oidc.exp, 1714521210);
-            assert_eq!(oidc.iat, 1714517610);
-            assert_eq!(oidc.additional_claims.get("name").unwrap(), "John Doe");
+            assert_eq!(oidc.issuer, "https://auth.example.com");
+            assert_eq!(oidc.claims.iss, "https://auth.example.com");
+            assert_eq!(oidc.claims.sub, "user123");
+            assert_eq!(oidc.claims.aud, vec!["client123"]);
+            assert_eq!(oidc.claims.exp, 1714521210);
+            assert_eq!(oidc.claims.iat, 1714517610);
             assert_eq!(
-                oidc.additional_claims.get("email").unwrap(),
+                oidc.claims.additional_claims.get("name").unwrap(),
+                "John Doe"
+            );
+            assert_eq!(
+                oidc.claims.additional_claims.get("email").unwrap(),
                 "john@example.com"
             );
+        } else {
+            panic!("Expected OIDC variant");
+        }
+    }
+
+    #[test]
+    fn test_appsync_identity_oidc_with_array_aud() {
+        let json = json!({
+            "claims": {
+                "iss": "https://zitadel.example.com",
+                "sub": "359478213648374507",
+                "aud": ["358982420441159448", "358982239599491392"],
+                "exp": 1770806714,
+                "iat": 1770763514,
+                "client_id": "358982420441159448",
+                "urn:zitadel:iam:org:project:roles": {
+                    "admin": {"358981944035333912": "zitadel.example.com"}
+                }
+            },
+            "sub": "359478213648374507",
+            "issuer": "https://zitadel.example.com"
+        });
+
+        if let AppsyncIdentity::Oidc(oidc) = serde_json::from_value(json).unwrap() {
+            assert_eq!(oidc.sub, "359478213648374507");
+            assert_eq!(oidc.issuer, "https://zitadel.example.com");
             assert_eq!(
-                oidc.additional_claims.get("roles").unwrap(),
-                &json!(["admin"])
+                oidc.claims.aud,
+                vec!["358982420441159448", "358982239599491392"]
             );
-            assert_eq!(oidc.additional_claims.get("org_id").unwrap(), "org123");
-            assert_eq!(oidc.additional_claims.get("custom_claim").unwrap(), "value");
+            assert_eq!(
+                oidc.claims.additional_claims.get("client_id").unwrap(),
+                "358982420441159448"
+            );
         } else {
             panic!("Expected OIDC variant");
         }
